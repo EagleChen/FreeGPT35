@@ -1,8 +1,7 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-const https = require("https");
-const { randomUUID } = require("crypto");
+import { AutoRouter, cors } from 'itty-router'
+import axios from "axios";
+// import https from "https";
+// import { randomUUID } from "crypto";
 
 // Constants for the server and API configuration
 const port = 3040;
@@ -10,6 +9,8 @@ const baseUrl = "https://chat.openai.com";
 const apiUrl = `${baseUrl}/backend-api/conversation`;
 const refreshInterval = 60000; // Interval to refresh token in ms
 const errorWait = 120000; // Wait time in ms after an error
+
+const authToken = 'YOUR_AUTH_HEADER';
 
 // Initialize global variables to store the session token and device ID
 let token;
@@ -60,7 +61,7 @@ async function* StreamCompletion(data) {
 
 // Setup axios instance for API requests with predefined configurations
 const axiosInstance = axios.create({
-  httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+  // httpsAgent: new https.Agent({ rejectUnauthorized: false }),
   headers: {
     accept: "*/*",
     "accept-language": "en-US,en;q=0.9",
@@ -84,7 +85,7 @@ const axiosInstance = axios.create({
 
 // Function to get a new session ID and token from the OpenAI API
 async function getNewSessionId() {
-  let newDeviceId = randomUUID();
+  let newDeviceId = crypto.randomUUID();
   const response = await axiosInstance.post(
     `${baseUrl}/backend-anon/sentinel/chat-requirements`,
     {},
@@ -99,27 +100,59 @@ async function getNewSessionId() {
   );
   oaiDeviceId = newDeviceId;
   token = response.data.token;
-
-  // console.log("New Token:", token);
-  // console.log("New Device ID:", oaiDeviceId);
 }
 
-// Middleware to enable CORS and handle pre-flight requests
-function enableCORS(req, res, next) {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "*");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
+function checkAuthorizationHeader(req) {
+  const authorizationHeader = req.headers.get('Authorization');
+
+  if (!authorizationHeader) {
+    return new Response(JSON.stringify({ error: 'Auth missing' }), {
+      headers: {
+        "Content-Type": "application/json"
+      },
+      status: 401
+    });
   }
-  next();
+
+  // 检查授权标头格式
+  const parts = authorizationHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    return new Response(JSON.stringify({ error: 'Invalid auth format' }), {
+      headers: {
+        "Content-Type": "application/json"
+      },
+      status: 400
+    });
+  }
+
+  if (parts[1] !== authToken) {
+    return new Response(JSON.stringify({ error: 'Auth failed' }), {
+      headers: {
+        "Content-Type": "application/json"
+      },
+      status: 401
+    });
+  }
+
+  return undefined;
 }
 
 // Middleware to handle chat completions
-async function handleChatCompletion(req, res) {
+async function handleChatCompletion(request) {
+  const res = checkAuthorizationHeader(request);
+  if (res) {
+    return res;
+  }
+
+  if ((!oaiDeviceId || !token) || (Math.random() < 0.3)) {
+    await getNewSessionId();
+  }
+
+  const req = {
+    body: await request.json(),
+  };
   console.log(
     "Request:",
-    `${req.method} ${req.originalUrl}`,
     `${req.body?.messages?.length || 0} messages`,
     req.body.stream ? "(stream-enabled)" : "(stream-disabled)"
   );
@@ -163,7 +196,7 @@ async function handleChatCompletion(req, res) {
     for await (const message of StreamCompletion(response.data)) {
       // Skip heartbeat detection
 			if (message.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}.\d{6}$/)) continue;
-			
+
       const parsed = JSON.parse(message);
 
       let content = parsed?.message?.content?.parts[0] || "";
@@ -263,53 +296,23 @@ async function handleChatCompletion(req, res) {
   }
 }
 
-// Initialize Express app and use middlewares
-const app = express();
-app.use(bodyParser.json());
-app.use(enableCORS);
+const { preflight, corsify } = cors()
+// Initialize router app and use middlewares
+const router = AutoRouter({
+  before: [preflight],  // add preflight upstream
+  finally: [corsify],   // and corsify downstream
+})
 
 // Route to handle POST requests for chat completions
-app.post("/v1/chat/completions", handleChatCompletion);
+router.post("/v1/chat/completions", handleChatCompletion);
 
 // 404 handler for unmatched routes
-app.use((req, res) =>
-  res.status(404).send({
-    status: false,
-    error: {
-      message: `The requested endpoint was not found. please make sure to use "http://localhost:3040/v1" as the base URL.`,
-      type: "invalid_request_error",
-    },
-  })
-);
+router.all("*", () => new Response({
+  status: false,
+  error: {
+    message: `The requested endpoint was not found. please make sure to use "http://localhost:3040/v1" as the base URL.`,
+    type: "invalid_request_error",
+  },
+}, { status: 404 }))
 
-// Start the server and the session ID refresh loop
-app.listen(port, () => {
-  console.log(`💡 Server is running at http://localhost:${port}`);
-  console.log();
-  console.log(`🔗 Base URL: http://localhost:${port}/v1`);
-  console.log(
-    `🔗 ChatCompletion Endpoint: http://localhost:${port}/v1/chat/completions`
-  );
-  console.log();
-  console.log("📝 Original TS Source By: Pawan.Krd");
-  console.log("📝 Modified Into JavaScript By: Adam");
-  console.log();
-
-  setTimeout(async () => {
-    while (true) {
-      try {
-        await getNewSessionId();
-        await wait(refreshInterval);
-      } catch (error) {
-        console.error("Error refreshing session ID, retrying in 1 minute...");
-        console.error(
-          "If this error persists, your country may not be supported yet."
-        );
-        console.error(
-          "If your country was the issue, please consider using a U.S. VPN."
-        );
-        await wait(errorWait);
-      }
-    }
-  }, 0);
-});
+export default { ...router };
