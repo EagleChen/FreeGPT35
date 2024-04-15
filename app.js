@@ -86,13 +86,12 @@ async function* StreamCompletion(data) {
 
 const defaultHeaders = {
   Accept: "*/*",
-  "accept-language": "en-US,en;q=0.9",
   "Content-Type": "application/json",
   "oai-language": "en-US",
   origin: baseUrl,
   referer: baseUrl + "/",
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
 };
 
 
@@ -119,7 +118,13 @@ async function getNewSessionId() {
       !token ? "(Now it's ready to process requests)" : ""
     }`
   );
-  console.log(`newDeviceId: ${newDeviceId}, response: ${JSON.stringify(response)}`);
+  const { headers } = response;
+  const contentType = headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    console.log('?????????????', JSON.stringify(await response.json()));
+  }
+  console.log("!!!!!!!!!", await response.text());
+
   oaiDeviceId = newDeviceId;
   token = response.data.token;
   console.log(`deviceid: ${oaiDeviceId}, token: ${token}`);
